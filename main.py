@@ -6,7 +6,7 @@ import random
 
 
 app = Flask(__name__)
-conn = sql.Connect(host="127.0.0.1", user="root", password="samaan11", database="hayah0")
+conn = sql.Connect(host="0.0.0.0", user="root", password="samaan11", database="hayah0")
 cursor = conn.cursor
 
 array1={}
