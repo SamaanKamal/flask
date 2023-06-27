@@ -2,16 +2,23 @@ from flask import Flask, request,jsonify,session,json
 import mysql.connector as sql
 from twilio.rest import Client
 import random
-
+from passlib.hash import sha256_crypt
+import re
+import os
+# importing datetime module for now()
+import datetime
+import base64
 
 
 app = Flask(__name__)
-conn = sql.Connect(host="0.0.0.0", user="root", password="samaan11", database="hayah0")
-cursor = conn.cursor
+conn = sql.Connect(host="database-1-instance-1.cjn0yvgchndp.eu-north-1.rds.amazonaws.com", user="root", password="samaan667", database="hayah0")
+cursor = conn.cursor()
+app.secret_key = os.urandom(24)
 
 array1={}
 array2={}
 array3={}
+
 
 account_sid = 'ACc1ad6bd30c16cfacedad4464dd9bca12'
 auth_token = 'b28656b4ae0dd485b41f9f2776e43645'
@@ -19,10 +26,148 @@ client = Client(account_sid, auth_token)
 
 # Store the SMS codes in a dictionary
 sms_codes = {}
-
+oldPhones = None
 @app.route('/')
 def index():
     return 'Hello from here'
+
+import vonage
+
+client = vonage.Client(key="e32ed317", secret="La8rDbRF5WYKAUPX")
+sms = vonage.Sms(client)
+
+
+@app.route('/send-sms', methods=['POST'])
+def send_sms():
+    # Get the recipient's phone number and the message content from the request
+    phone_number = request.json.get('phone_number')
+    print(phone_number)
+    #message = request.form.get('message')
+    fullPhoneNumber = '+2'+ str(phone_number)
+    if not fullPhoneNumber:
+        return jsonify({'message': 'Phone number is required'}), 400
+
+    code = str(random.randint(1000, 9999))
+    print(fullPhoneNumber)
+    # Send the SMS using the Nexmo client
+    response = sms.send_message({
+        'from': 'hayah',  # Replace with your Nexmo virtual number or alphanumeric sender ID
+        'to':fullPhoneNumber,
+        'text': f'Your verification code is {code}    '
+    })
+
+    if response['messages'][0]['status'] == '0':
+        return jsonify({'message':'SMS sent successfully'}),200
+    else:
+        return jsonify({'message':'SMS failed to send'}),400
+
+
+
+
+@app.route("/register", methods=['Post'])
+def register():
+    global oldPhones
+    fname = request.json.get('ufname')
+    lname = request.json.get('ulname')
+    email = request.json.get('uemail')
+    password = request.json.get('upassword').encode()
+    phone = request.json.get('uphone')
+    gender = request.json.get('Gender')
+    blood_type = request.json.get('blood_types')
+    street = request.json.get('uAddress')
+    age = request.json.get('uage')
+    oldPhones = phone
+    print(oldPhones)
+    encrypted_password = sha256_crypt.encrypt(password)
+
+    cursor.execute('SELECT * FROM donors WHERE Email = %s', (email,))
+    account = cursor.fetchone()
+    # If account exists show error and validation checks
+    try:
+        if account:
+            msg = 'Account already exists!'
+        elif not re.match(r'[^@]+@[^@]+\.[^@]+', email):
+            msg = 'Invalid email address!'
+        elif not re.match(r'[A-Za-z]+', fname):
+            msg = 'First Name must contain only characters !'
+        elif not re.match(r'[A-Za-z]+', lname):
+            msg = 'Last Name must contain only characters !'
+        else:
+            # Account doesnt exists and the form data is valid, now insert new account into accounts table
+            cursor.execute("""INSERT INTO `donors` (`FName`, `LName`, `Email`, `Dpassword`, `PhoneNumber`, 
+                            `Gender`,`Blood_type`, `address`, `age`) VALUES 
+                            ('{}', '{}', '{}', '{}', '{}','{}',
+                            '{}', '{}', '{}')"""
+                            .format(fname, lname, email, encrypted_password, phone, gender, blood_type, street, age))
+
+            cursor.execute("""SELECT * FROM `Donors` WHERE `Email` LIKE '{}'""".format(email))
+            account = cursor.fetchone()
+            session['id'] = account[0]
+            session['email'] = account[3]
+            conn.commit()
+            response = {'success': True, 'message': 'Registerd successfully.'}
+            return jsonify(response),200
+        return jsonify({'error': msg}), 400
+    except Exception as e:
+            return jsonify({'error': str(e)}),500
+    
+
+@app.route('/login_validation', methods = ['POST', 'GET'])
+def login_validation():
+    user = request.json.get('User')
+    if user == "Donor":
+        return donor_login_validation()
+    elif user == "Doctor":
+        return doctor_login_validation()
+    else:
+        return jsonify({'error': 'Invalid choice , Please Try again'}),403
+
+
+@app.route('/donor_login_validation', methods=['POST', 'GET'])
+def donor_login_validation():
+    email = request.json.get('email')
+    password = request.json.get('password')
+    cursor.execute("""SELECT * FROM `Donors` WHERE `Email` = '{}'"""
+                   .format(email))
+
+    account = cursor.fetchone()
+    user_hashed_password = account[4]
+
+    if sha256_crypt.verify(password, user_hashed_password):
+        session['logged'] = True
+        session['id'] = account[0]
+        session['email'] = account[3]
+        response = {'success': True, 'message': 'Logged in successfully.'}
+        return jsonify(response),200
+    else:
+        # Account doesnt exist or username/password incorrect
+        msg = 'Incorrect username/password!'
+        #print(msg)
+        return jsonify({'success': False,'message':msg}),406
+
+
+@app.route('/doctor_validation', methods=['POST', 'GET'])
+def doctor_login_validation():
+    email = request.json.get('email')
+
+    password = request.json.get('password')
+    cursor.execute("""SELECT * FROM `Doctors` WHERE `doctor_email` = '{}'"""
+                   .format(email))
+
+    account = cursor.fetchone()
+    doctor_password = account[4]
+
+    if password == doctor_password:
+        session['logged'] = True
+        session['code'] = account[0]
+        session['email'] = account[3]
+        response = {'success': True, 'message': 'Logged in successfully.'}
+        return jsonify(response),200
+    else:
+        # Account doesnt exist or username/password incorrect
+        msg = 'Incorrect username/password!'
+        #print(msg)
+        return jsonify({'success': False,'message':msg}),406
 
 @app.route('/generate_code', methods=['POST'])
 def generate_code():
@@ -35,8 +180,8 @@ def generate_code():
     # Send the SMS code using the Twilio API
     message = client.messages.create(
         body=f'Your verification code is {code}',
-        from_='+15855153830',
-        to='20'+phone_number
+        from_='+12708183360',
+        to='+2'+phone_number
     )
 
     # Store the code in the dictionary
@@ -51,20 +196,21 @@ def generate_code():
 @app.route('/updateDonorInfo',methods =['POST'])
 def updateDonor():
     if request.method =="POST"and 'id' in session:
+        global oldPhones
         _id = session['id']
-        address=request.form['address']
-        city=request.form['city']
-        phone=request.form['phone']
-        password=request.form['password']
+        address=request.json.get('address')
+        city=request.json.get('city')
+        phone=request.json.get('phone')
+        password=request.json.get('password')
         code = request.json.get('code')
-        full_address = address + city
-
+        full_address = address +' ' +city
+        print(oldPhones)
         # Check if the phone number is in the dictionary
-        if phone in sms_codes:
+        if oldPhones in sms_codes:
             # Check if the code matches the one in the dictionary
-            if sms_codes[phone] == code:
+            if sms_codes[oldPhones] == code:
                 # Remove the code from the dictionary
-                del sms_codes[phone]
+                del sms_codes[oldPhones]
                 
                 cursor.execute("""UPDATE `Donors` SET `address` = '{}',  `PhoneNumber`  ={}, `Dpassword`  = '{}' WHERE `DonorID` ={} """.format(full_address,phone,password,_id))
                 conn.commit()
@@ -81,23 +227,25 @@ def updateDonor():
         #return jsonify(["information update success"])
         #return""
 
+
 @app.route('/updateDoctorInfo',methods =['POST'])
 def updateDoctor():
     if request.method =="POST" and 'id' in session:
-        Doctor_Code = session['code']
-        address=request.form['address']
-        city=request.form['city']
-        phone=request.form['phone']
-        password=request.form['password']
+        global oldPhones
+        Doctor_Code = session('code')
+        address=request.json.get('address')
+        city=request.json.get('city')
+        phone=request.json.get('phone')
+        password=request.json.get('password')
         code = request.json.get('code')
-        full_address = address + city
+        full_address = address +' ' + city
 
          # Check if the phone number is in the dictionary
         if phone in sms_codes:
             # Check if the code matches the one in the dictionary
-            if sms_codes[phone] == code:
+            if sms_codes[oldPhones] == code:
                 # Remove the code from the dictionary
-                del sms_codes[phone]
+                del sms_codes[oldPhones]
 
 
                 cursor.execute("""UPDATE `doctors` SET `doctor_address` = '{}', `Doctor_PhoneNumber`  ={} , `doctor_password`  ='{}' WHERE `DoctorsCode` ={} """.format(full_address,phone,password,Doctor_Code))
@@ -112,6 +260,118 @@ def updateDoctor():
         #return""
     else:
         return jsonify({'error': 'Not logged in:Unauthoriezed'}),401
+
+@app.route("/create_report", methods=['Post'])
+def report():
+    try:
+        #doctor_code = request.form.get('doctor_code')
+        #donor_email = request.form.get('donor_email')
+        donor_id = session["id"]
+        doctor_code = session['code']
+        status = request.json.get('status')
+        reason = request.json.get('reason')
+        # using now() to get current time
+        current_time = datetime.datetime.now()
+        mchc = request.json.get('mchc')
+        hba1c = request.json.get('hba1c')
+        sgot_ast = request.json.get('sgot_ast')
+        sgot_alt = request.json.get('sgot_alt')
+        blood_urea = request.json.get('blood_urea')
+        serum_creatine = request.json.get('serum_creatine')
+        serum_uric_acid = request.json.get('serum_uric_acid')
+        hemoglobine = request.json.get('hemo')
+        red_cells_count = request.json.get('red_cells_count')
+        mch = request.json.get('mch')
+        mcv = request.json.get('mcv')
+        platelet_count = request.json.get('platelet_count')
+        HIV_Antibody = request.json.get('HIV_Antibody')
+        HBs_Antigen = request.json.get('HBs_Antigen')
+        HCV_Ab_lgG = request.json.get('HCV_Ab_lgG')
+        vdrl = request.json.get('VDRL')
+
+        #cursor.execute("""INSERT INTO `reports` (`status`,`reason`,`Report_Date_Time`,
+        # `Hemoglobin_Concentration_Mean_Corpuscular_MCHC`, `Glycated_Hemoglobin_HBA1C`, 
+        # `Serum_Aspartate_Transfrerase_SGOT_AST`, `Serum_Alanine_Transfrerase_SGPT_ALT`, 
+        # `Blood_Urea_Niterogen_BUN`, `Serum_creatinine`, `Serum_uric_Acid`,
+        # `Hemoglobin`, `Red_Blood_Cell_Count`, `MCH`, `MCV`, `Platelet_Count`,`HIV_Antibody`,`HBs_Antigen`,`HCV_Ab_lgG`,`VDRL`, `Donor_ID`, 
+        # `Doctor_Code`) VALUES 
+        # ({} ,{} ,{} ,{} ,{} ,{} ,{} ,{} ,{} ,{} ,{} ,{} ,{} ,{} )"""
+        #             .format(status,reason,current_time,mchc, hba1c, sgot_ast, sgot_alt, blood_urea, serum_creatine, serum_uric_acid, hemoglobine,
+        #                     red_cells_count, mch, mcv, platelet_count,HIV_Antibody,HBs_Antigen,HCV_Ab_lgG,vdrl, donor_id, doctor_code))
+
+        cursor.execute("""
+            INSERT INTO `reports` (
+                `status`,
+                `reason`,
+                `Report_Date_Time`,
+                `Hemoglobin_Concentration_Mean_Corpuscular_MCHC`,
+                `Glycated_Hemoglobin_HBA1C`,
+                `Serum_Aspartate_Transfrerase_SGOT_AST`,
+                `Serum_Alanine_Transfrerase_SGPT_ALT`,
+                `Blood_Urea_Niterogen_BUN`,
+                `Serum_creatinine`,
+                `Serum_uric_Acid`,
+                `Hemoglobin`,
+                `Red_Blood_Cell_Count`,
+                `MCH`,
+                `MCV`,
+                `Platelet_Count`,
+                `HIV_Antibody`,
+                `HBs_Antigen`,
+                `HCV_Ab_lgG`,
+                `VDRL`,
+                `Donor_ID`,
+                `Doctor_Code`
+            ) VALUES (
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+            )
+        """, (
+            status,
+            reason,
+            current_time,
+            mchc,
+            hba1c,
+            sgot_ast,
+            sgot_alt,
+            blood_urea,
+            serum_creatine,
+            serum_uric_acid,
+            hemoglobine,
+            red_cells_count,
+            mch,
+            mcv,
+            platelet_count,
+            HIV_Antibody,
+            HBs_Antigen,
+            HCV_Ab_lgG,
+            vdrl,
+            donor_id,
+            doctor_code
+        ))
+
+        #cursor.execute("""SELECT `num_of_times_donated` FROM `donors` WHERE `DonorID` LIKE '{}'""".format(donor_id))
+        cursor.execute("""
+            SELECT `num_of_times_donated`
+            FROM `donors`
+            WHERE `DonorID` = %s
+        """, (donor_id,))
+        numberOfTimesDonated= cursor.fetchone()
+        if numberOfTimesDonated[0] is None:
+            numberOfTimesDonated =1
+        else:
+            numberOfTimesDonated = numberOfTimesDonated[0] +1
+        
+        #cursor.execute("""UPDATE `Donors` SET `num_of_times_donated` = '{}' WHERE `DonorID` LIKE '{}'""".format(numberOfTimesDonated,donor_id))
+        cursor.execute("""
+            UPDATE `Donors`
+            SET `num_of_times_donated` = %s
+            WHERE `DonorID` = %s
+        """, (numberOfTimesDonated, donor_id))
+        conn.commit()
+        response = {'success': True, 'message': 'A new report generated!.'}
+        return  jsonify(response),200
+    except Exception as e:
+            return jsonify({'error': str(e)}),401
   
 @app.route('/GetReportID', methods = ['GET'])
 def getID():
@@ -202,7 +462,7 @@ def getDoctorInfo():
         try:
 
             code = session['code']
-            cursor.execute("""SELECT * FROM `doctors` WHERE `DoctrosCode` = {}""".format(code))
+            cursor.execute("""SELECT * FROM `doctors` WHERE `DoctorsCode` = {}""".format(code))
             AccountInfo = cursor.fetchone()
             if AccountInfo:
 
@@ -225,29 +485,37 @@ def getDoctorInfo():
 def createDiscount():
     if request.method=='POST':
         if 'id' in session:
-            with open(r'C:\Users\User\Desktop\alpha.jpg','rb') as file:
+            with open(r'D:\fcis\GP\New folder\Task1\static\alpha.jpg','rb') as file:
                 blob_data = file.read()
             DataDic={}
             id = session['id']
             try:
 
-                cursor.execute("""SELECT `num_of_times_donated` FROM `donors` WHERE `DonorID` LIKE '{}'""".format(id))
+                cursor.execute("""SELECT `num_of_times_donated` FROM `donors` WHERE `DonorID` = {}""".format(id))
                 numberOfTimesDonated= cursor.fetchone()
                 if numberOfTimesDonated:
-                    if(numberOfTimesDonated[9]>5):
-                        cursor.execute("""INSERT INTO `discounts` (`percentage`, `LabName`,`DiscountNumber`,`discountImage`) VALUES ({}, {}, '{}', '{}', '{}',{},'{}')""".format(40,'alpha',5,blob_data))
-                        
-                        cursor.execute("""INSERT INTO `getting_offer` ( `Donor_IDDD`, `NumOfTimesDonated`) VALUES ({}, {}, '{}')""".format(id,numberOfTimesDonated))
+                    if(numberOfTimesDonated[0]>5):
+                        NewnumberOfTimesDonated = numberOfTimesDonated[0]
+                        #cursor.execute("""INSERT INTO `discounts` (`percentage`, `LabName`,`DiscountNumber`,`discountImage`) VALUES ({}, '{}', {},'{}')""".format(40,'alpha',5,blob_data))
+                        cursor.execute("""INSERT INTO `discounts` (`percentage`, `LabName`, `DiscountNumber`, `discount_image`) VALUES (%s, %s, %s, %s)""", (40, 'alpha', 5, blob_data))
+                        conn.commit()  # Commit the insert into discounts
+                        cursor.fetchall()  # Consume any unread result
+                        discount_id = cursor.lastrowid  # Get the auto-incremented DiscountID
+                        cursor.execute("""INSERT INTO `getting_offer` ( `Discount_ID`,`Donor_IDDD`, `NumOfTimesDonated`) VALUES ({},{}, {})""".format(discount_id,id,NewnumberOfTimesDonated))
+                        conn.commit()  # Commit the insert into discounts
+                        cursor.fetchall()  # Consume any unread result
                         cursor.execute("""SELECT `Discount_ID` FROM `getting_offer` WHERE `Donor_IDDD` = {} """.format(id))
+                        
                         DiscountID = cursor.fetchone()
-                        cursor.execute("""SELECT * FROM `discounts` WHERE `DiscountID` = {}""".format(DiscountID))
+                        #cursor.execute("""SELECT * FROM `discounts` WHERE `DiscountID` = {}""".format(DiscountID))
+                        cursor.execute("""SELECT * FROM `discounts` WHERE `DiscountID` = %s""", (DiscountID[0],))
                         DiscountData=cursor.fetchone()
                         conn.commit()
                         DataDic['DiscountID']=DiscountData[0]
                         DataDic['percentage']=DiscountData[1]
                         DataDic['LabName']=DiscountData[2]
                         DataDic['DiscountNumber']=DiscountData[3]
-                        DataDic['DiscountImage']=DiscountData[4]
+                        DataDic['DiscountImage']=base64.b64encode(blob_data).decode('utf-8')  # Convert to Base64 string
 
                         return jsonify(DataDic), 200
                     else:
@@ -266,4 +534,4 @@ def createDiscount():
     
 if __name__ == "__main__":
 
-    app.run(host='0.0.0.0',debug=True)
+    app.run(debug=True)
